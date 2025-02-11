@@ -2,11 +2,18 @@
 import os
 import datetime
 import time
+from dotenv import load_dotenv
+import threading 
+
+load_dotenv() 
 
 """todo 
 
+setup an aws instance - for command to access and for node to connect too for  file transfer
+
+the file compare names need to be changed to be more descriptive and fixed as there is an logic error 
+
 auto get ssh key from idrsa - command 
-in parse_user_input() make it so that the information is stored in a file and the file is checked at launch to speed up workflow, - node
 ssh whitelist - command 
 inital connection- node 
 
@@ -19,7 +26,7 @@ optimisation - both
 def firstSetup():
     ##Setup required directories and files.
     folderpath = "/etc/NinjaEye"
-    folders = ["logs", "client_info", "logs/alerts"]
+    folders = ["logs", "client_info", "logs/alerts", "file_compare"]
     try:
         for folder_name in folders:
             folder_path = os.path.join(folderpath, folder_name)
@@ -29,43 +36,24 @@ def firstSetup():
         print("Permission denied: Please run the script with elevated privileges.")
         exit(1)
 
+  
 
-def parse_user_input():
-    # ask  the user to input the one-line information
-    user_input = input("Paste the system information command gave you (one line): ").strip()
-
+def get_env_variable():
     try:
-        
-        # Parse the input string into pairs
-        info_dict = {}
-        for pair in user_input.split(", "):  
-            key, value = pair.split(": ", 1)  
-            info_dict[key.strip()] = value.strip()
-
-        # Assign variables from the  dictionary to  variable names for use 
-        ip_address = info_dict.get("IP Address", "N/A").split()[0] ## temporary fix to getting too many ips 
-        hostname = info_dict.get("Hostname", "N/A")
-        ssh_key = info_dict.get("SSH Key", "N/A")
-        commands_name = info_dict.get("Commands Name", "N/A")
-        ssh_username = info_dict.get("SSH Username", "N/A")
-
-        # Return the values for commandConnection()
-        return ip_address, hostname, ssh_key, commands_name, ssh_username
-
-    except ValueError:
-        print("Error: Input format is incorrect. Ensure the data is in 'Key: Value' pairs separated by commas.")
-        return None
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        return None
+       ssh_key = os.getenv('SSH_KEY')
+       ip_address = os.getenv('IP_ADDRESS')
+       ssh_username = os.getenv('SSH_USERNAME')
     
+       print("enviroment variables loaded")
+       return ssh_key, ip_address, ssh_username
+    
+    except Exception as e:
+        print(f"An error occurred with the enviroment variables: {e}")
+        return None
 
-##scp testscp.txt {ip}:/tmp for transfering files. ask client if they use ssh keys cause for this we are using ssh keys!
-
-def commandConnection(ip_address, hostname, ssh_username, data):    #main function used for connecting to command through scp
+def commandConnection(ip_address, ssh_username, data, filereason):    #main function used for connecting to command through scp
     currentTime = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S") 
-    filereason = "log" ##temp solution untill a better way of determining what filetype should be 
-    filename = f"NINJAEYE-{ip_address}-{hostname}-{currentTime}-{filereason}"  
+    filename = f"NINJAEYE-{ip_address}-{currentTime}-{filereason}"  
     filepath = f"/etc/NinjaEye/logs/alerts/{filename}"
 
 
@@ -74,21 +62,29 @@ def commandConnection(ip_address, hostname, ssh_username, data):    #main functi
         f.write(data)
 
     os.system(f"scp {filepath} {ssh_username}@{ip_address}:/tmp") # sends data to server
-    return filename
+    return
 
 
 
 #def sshLog(): # gathers ssh logs and places them into a compare file
 
+def fileChecker():  
+    test =  os.stat("control_file.txt") ## the file that is being accessed to test the function using nano
+    statfile = "/etc/NinjaEye/file_compare/newfile.txt" 
+    with open(statfile, "w") as file: 
+        file.write(f"{test.st_atime} : {test.st_mtime} \n")
+    access_time = test.st_atime
+    modify_time = test.st_mtime
+    fileCompare(access_time, modify_time) 
+        #return access_time, modify_time 
 
 
 def sshCompare(): # comparison function of ssh logs to predefined ssh log
+    filereason = "unauthorizedSSH" 
     while True:
 
         sshCmd = "grep sshd /var/log/auth.log > /etc/NinjaEye/logs/sshCompare.txt"  ## 
         os.system(sshCmd)
-
-
 
         afterLog = open("/etc/NinjaEye/logs/sshCompare.txt")
         beforeLog = open("/etc/NinjaEye/logs/ssh.txt")
@@ -108,7 +104,7 @@ def sshCompare(): # comparison function of ssh logs to predefined ssh log
                 alert_data += line #combines the alert data 
 
                 ##sends information to command 
-            filename = commandConnection(ip_address, hostname,  ssh_username, alert_data)  # file reason will be parsed in here 
+            commandConnection(ip_address, ssh_username, alert_data, filereason)  # file reason will be parsed in here 
          
 
         else:
@@ -118,11 +114,60 @@ def sshCompare(): # comparison function of ssh logs to predefined ssh log
         beforeLog.close()
         time.sleep(30) #checks every 30 seconds 
 
-if __name__ == "__main__":
-  firstSetup()
- # sshLog()
- #line above is commented for testing 
-  ip_address, hostname, ssh_key, commands_name, ssh_username = parse_user_input()  # Store the returned values
-  sshCompare()
 
+
+def fileCompare(access_time, modify_time):
+    filereason = "unauthorizedAccess"
+    while True:
+
+        afterLog = open("/etc/NinjaEye/file_compare/newfile.txt") ## the file that has the current time the file was accessed
+        beforeLog = open("previousfile.txt")
+
+        beforeLog_data = beforeLog.readlines()
+        afterLog_data = afterLog.readlines()
+
+        before_set = set(beforeLog_data)
+        after_set = set(afterLog_data)
+    
+        differences = after_set - before_set 
+        if differences:
+            alert_data = "" 
+            for line in differences:
+                print(f"\t ALERT! folder accessed ", line, end="")
+                alert_data += line #combines the alert data 
+
+                ##sends information to command 
+            commandConnection(ip_address, ssh_username, alert_data, filereason)  # file reason will be parsed in here          
+
+        else:
+            print("No differences found.")
+
+        afterLog.close()
+        beforeLog.close()
+        ##write code into previous file 
+        with open("previousfile.txt", "w") as file: 
+            file.write(f"{access_time} : {modify_time} \n")
+
+
+        time.sleep(30) 
+        fileChecker()
+
+if __name__ == "__main__":
+  
+
+  firstSetup()
+  ssh_key, ip_address, ssh_username = get_env_variable()
+  
+  sshThread = threading.Thread(target=sshCompare, daemon=True)  # Create a thread for the sshCompare function
+  sshThread.start() # Start the thread
+
+  fileThread = threading.Thread(target=fileChecker, daemon=True)  # Create a thread for the fileChecker function
+  fileThread.start() # Start the thread
+
+  sshThread.join()  # Wait for the thread to finish
+  fileThread.join()  # Wait for the thread to finish
+
+  sshCompare()
+  fileChecker() 
+  #fileCompare() 
   
